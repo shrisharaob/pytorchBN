@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import numpy as np
 
 
 class BalRNN(nn.Module):
@@ -55,12 +56,13 @@ class BalRNN(nn.Module):
         indices = []
         values = []
         for i in range(hidden_size):
-            selected_indices = torch.randperm(hidden_size)[:K]
+            tmp_K = np.where(np.random.rand(hidden_size) <= K / hidden_size)[0]
+            selected_indices = torch.tensor(tmp_K)
             indices.extend([[i, j] for j in selected_indices])
+            num_selected_indices = selected_indices.shape[0]
             values.extend(
                 [self.JII / torch.sqrt(torch.tensor(K, dtype=torch.float32))] *
-                K)
-
+                num_selected_indices)
         indices = torch.tensor(indices).t()
         values = torch.tensor(values, dtype=torch.float32)
         sparse_weight = torch.sparse.FloatTensor(
@@ -93,10 +95,6 @@ class BalRNN(nn.Module):
                     h_t[layer] = self.transfer_function(
                         ff_input + torch.sparse.mm(self.weight_hh[layer],
                                                    h_t_minus_1[layer].T).T)
-                    # h_t[layer] = self.transfer_function(
-                    #     torch.sparse.mm(self.weight_ih[layer], x[t].T).T +
-                    #     torch.sparse.mm(self.weight_hh[layer],
-                    #                     h_t_minus_1[layer].T).T)
                 else:
                     h_t[layer] = self.transfer_function(
                         torch.sparse.mm(self.weight_hh[layer], \
@@ -149,9 +147,9 @@ if __name__ == '__main__':
     ri = rates.mean(axis=0)
     print(ri.min(), ri.max(), sum(ri <= 0))
     ax.hist(ri, 25)
-    ax.set_xscale('symlog')
+    # ax.set_xscale('symlog')
     # ax.set_xticks(np.linspace(1e-5, 1e1, 1e-1))
-    plt.title('rate distr: is this balanced??')
+    plt.title('rate distr')
     plt.figure()
     plt.plot(rates.mean(axis=1))
     plt.title('network avg rate')
