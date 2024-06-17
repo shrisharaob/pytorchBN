@@ -153,8 +153,8 @@ if __name__ == '__main__':
     batch_size = 1
     seq_len = 100  # simulation time
     K = 100
-    J0I = 0.2
-    JII = -0.1
+    J0I = 1.0
+    JII = -0.001
     rnn = BalRNN(input_size,
                  hidden_size,
                  num_layers,
@@ -163,7 +163,7 @@ if __name__ == '__main__':
                  J0I=J0I,
                  JII=JII)
     # (batch_size, seq_len, input_size)
-    x = 4.0 * torch.ones(batch_size, seq_len, input_size)
+    x = 1.0 * torch.ones(batch_size, seq_len, input_size)
     # total_input will be: O(K * J0I / sqrt(K)) = O(sqrt(K))
     # randn(3, 5, input_size)
     h_0 = torch.zeros(num_layers, batch_size,
@@ -174,6 +174,11 @@ if __name__ == '__main__':
 
     import matplotlib.pyplot as plt
     import numpy as np
+
+    plt.figure()
+    plt.hist(h_n.detach().numpy().squeeze())
+    u = h_n.detach().numpy().squeeze()
+    print('u:', sum(u <= 0))
 
     # plt.hist(h_n.detach().numpy().squeeze(), 25)
 

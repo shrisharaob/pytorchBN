@@ -109,8 +109,8 @@ if __name__ == '__main__':
     batch_size = 1
     seq_len = 100  # simulation time
     K = 100
-    J0I = 0.2
-    JII = -0.1
+    J0I = 1.0
+    JII = -0.01
     rnn = BalRNN(input_size,
                  hidden_size,
                  num_layers,
