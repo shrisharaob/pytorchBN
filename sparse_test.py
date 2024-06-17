@@ -164,6 +164,7 @@ if __name__ == '__main__':
     print(h_n.shape)
 
     import matplotlib.pyplot as plt
+    import numpy as np
 
     # plt.hist(h_n.detach().numpy().squeeze(), 25)
 
@@ -175,6 +176,7 @@ if __name__ == '__main__':
     print(ri.min(), ri.max(), sum(ri <= 0))
     ax.hist(ri, 25)
     ax.set_xscale('symlog')
+    # ax.set_xticks(np.linspace(1e-5, 1e1, 1e-1))
     plt.title('rate distr: is this balanced??')
     plt.figure()
     plt.plot(rates.mean(axis=1))
