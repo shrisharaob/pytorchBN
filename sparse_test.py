@@ -12,13 +12,13 @@ class BalRNN(nn.Module):
                  num_layers,
                  batch_first=True,
                  K=10,
-                 J0I=0.4,
+                 JI0=0.4,
                  JII=-0.1):
         super(BalRNN, self).__init__()
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.batch_first = batch_first
-        self.J0I = J0I
+        self.JI0 = JI0
         self.JII = JII
         #
         self.history = []
@@ -26,7 +26,7 @@ class BalRNN(nn.Module):
         self.weight_ih = nn.ParameterList([
             nn.Parameter(
                 torch.randn(hidden_size, input_size) *
-                (J0I / torch.sqrt(torch.tensor(K, dtype=torch.float32))))
+                (JI0 / torch.sqrt(torch.tensor(K, dtype=torch.float32))))
             for _ in range(num_layers)
         ])
 
@@ -35,14 +35,14 @@ class BalRNN(nn.Module):
             for _ in range(num_layers)
         ])
 
-    def initialize_ff_weight(self, input_size, hidden_size, K, J0I):
+    def initialize_ff_weight(self, input_size, hidden_size, K, JI0):
         indices = []
         values = []
         for i in range(hidden_size):
             selected_indices = torch.randperm(input_size)[:K]
             indices.extend([[i, j] for j in selected_indices])
             values.extend(
-                [self.J0I / torch.sqrt(torch.tensor(K, dtype=torch.float32))] *
+                [self.JI0 / torch.sqrt(torch.tensor(K, dtype=torch.float32))] *
                 K)  # list mult
 
         indices = torch.tensor(indices).t()
@@ -81,13 +81,22 @@ class BalRNN(nn.Module):
         h_t_minus_1 = h_0
         h_t = h_0.clone()
         output = []
+        ff_input = torch.ones(self.hidden_size) * torch.sqrt(torch.tensor(K))
+        print('ffshape:', ff_input.shape)
+        tmp = torch.sparse.mm(self.weight_hh[0], h_t_minus_1[0].T).T
+        print(tmp.shape)
+        tmp2 = ff_input + tmp
+        print('tmp2shape:', tmp2.shape)
         for t in range(seq_len):
             for layer in range(self.num_layers):
                 if layer == 0:  # x[t] @ self.weight_ih[layer].T
                     h_t[layer] = self.transfer_function(
-                        torch.sparse.mm(self.weight_ih[layer], x[t].T).T +
-                        torch.sparse.mm(self.weight_hh[layer],
-                                        h_t_minus_1[layer].T).T)
+                        ff_input + torch.sparse.mm(self.weight_hh[layer],
+                                                   h_t_minus_1[layer].T).T)
+                    # h_t[layer] = self.transfer_function(
+                    #     torch.sparse.mm(self.weight_ih[layer], x[t].T).T +
+                    #     torch.sparse.mm(self.weight_hh[layer],
+                    #                     h_t_minus_1[layer].T).T)
                 else:
                     h_t[layer] = self.transfer_function(
                         torch.sparse.mm(self.weight_hh[layer], \
@@ -109,25 +118,25 @@ if __name__ == '__main__':
     batch_size = 1
     seq_len = 100  # simulation time
     K = 100
-    J0I = 1.0
+    JI0 = 1.0
     JII = -0.01
     rnn = BalRNN(input_size,
                  hidden_size,
                  num_layers,
                  batch_first=True,
                  K=K,
-                 J0I=J0I,
+                 JI0=JI0,
                  JII=JII)
     # (batch_size, seq_len, input_size)
-    x = 4.0 * torch.ones(batch_size, seq_len, input_size)
-    # total_input will be: O(K * J0I / sqrt(K)) = O(sqrt(K))
+    x = 1.0 * torch.ones(batch_size, seq_len, input_size)
+    # total_input will be: O(K * JI0 / sqrt(K)) = O(sqrt(K))
     # randn(3, 5, input_size)
     h_0 = torch.zeros(num_layers, batch_size,
                       hidden_size)  # (num_layers, batch_size, hidden_size)
     output, h_n = rnn(x, h_0)
     print(output.shape)
     print(h_n.shape)
-
+    print(f'JI0={JI0} JII={JII}')
     import matplotlib.pyplot as plt
     import numpy as np
 
