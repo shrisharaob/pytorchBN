@@ -3,9 +3,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-class CustomRNN(nn.Module):
-'''One pop balanced network
-'''
+class BalRNN(nn.Module):
+    '''one pop bal network'''
+
     def __init__(self,
                  input_size,
                  hidden_size,
@@ -14,7 +14,7 @@ class CustomRNN(nn.Module):
                  K=10,
                  J0I=0.4,
                  JII=-0.1):
-        super(CustomRNN, self).__init__()
+        super(BalRNN, self).__init__()
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.batch_first = batch_first
@@ -90,7 +90,7 @@ class CustomRNN(nn.Module):
         return sparse_weight
 
     def transfer_function(self, total_input):
-        return F.relu(total_input) # should we care about positive rates?
+        return F.relu(total_input)  # should we care about positive rates?
         # return torch.ones(x.shape) +
         # return torch.tanh(total_input)
 
@@ -146,13 +146,13 @@ if __name__ == '__main__':
     K = 100
     J0I = 0.2
     JII = -0.1
-    rnn = CustomRNN(input_size,
-                    hidden_size,
-                    num_layers,
-                    batch_first=True,
-                    K=K,
-                    J0I=J0I,
-                    JII=JII)
+    rnn = BalRNN(input_size,
+                 hidden_size,
+                 num_layers,
+                 batch_first=True,
+                 K=K,
+                 J0I=J0I,
+                 JII=JII)
     # (batch_size, seq_len, input_size)
     x = 4.0 * torch.ones(batch_size, seq_len, input_size)
     # total_input will be: O(K * J0I / sqrt(K)) = O(sqrt(K))
