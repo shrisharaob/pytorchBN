@@ -1,7 +1,8 @@
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
+import torch.optim as optim
 
 
 class BalRNN(nn.Module):
@@ -37,27 +38,13 @@ class BalRNN(nn.Module):
             for _ in range(num_layers)
         ])
 
-    # def initialize_ff_weight(self, input_size, hidden_size, K, JI0):
-    #     indices = []
-    #     values = []
-    #     for i in range(hidden_size):
-    #         selected_indices = torch.randperm(input_size)[:K]
-    #         indices.extend([[i, j] for j in selected_indices])
-    #         values.extend(
-    #             [self.JI0 / torch.sqrt(torch.tensor(K, dtype=torch.float32))] *
-    #             K)  # list mult
-
-    #     indices = torch.tensor(indices).t()
-    #     values = torch.tensor(values, dtype=torch.float32)
-    #     ff_sparse_weight = torch.sparse.FloatTensor(
-    #         indices, values, torch.Size([hidden_size, input_size]))
-    #     return ff_sparse_weight
+        # Linear layer to map from hidden_size to input_size
+        self.output_layer = nn.Linear(hidden_size, input_size)
 
     def initialize_ff_weight(self, input_size, hidden_size, K, JI0):
         indices = []
         values = []
         for i in range(hidden_size):
-            # selected_indices = torch.randperm(input_size)[:K]
             tmp_K = np.where(np.random.rand(input_size) <= K / input_size)[0]
             selected_indices = torch.tensor(tmp_K)
             num_selected_indices = selected_indices.shape[0]
@@ -94,44 +81,34 @@ class BalRNN(nn.Module):
         mask_values = []
 
         for i in range(hidden_size):
-            # Randomly select K indices for connections
-            # selected_indices = torch.randperm(hidden_size)[:K]
-
             tmp_K = np.where(np.random.rand(hidden_size) <= K / hidden_size)[0]
             selected_indices = torch.tensor(tmp_K)
             num_selected_indices = selected_indices.shape[0]
 
-            # Extend mask_indices with the selected indices for the current unit
             mask_indices.extend([[i, j] for j in selected_indices])
-
-            # Set values for these connections to J/sqrt(K)
             mask_values.extend(
                 [J / torch.sqrt(torch.tensor(K, dtype=torch.float32))] *
                 num_selected_indices)
 
-            # Randomly select sqrt(K) indices as trainable connections
             trainable_indices = selected_indices[:int(K**0.5)]
             trainable_values = [
                 J / torch.sqrt(torch.tensor(int(K**0.5), dtype=torch.float32))
             ] * int(K**0.5)
             mask_values[-int(K**0.5):] = trainable_values
 
-            # Create a trainable mask tensor to mark trainable weights
             trainable_mask = torch.zeros(hidden_size)
             trainable_mask[trainable_indices] = 1
             trainable_mask = trainable_mask.unsqueeze(1)
             trainable_mask = trainable_mask.repeat(1, hidden_size)
             trainable_mask = trainable_mask.reshape(-1)
 
-        # Convert mask_indices and mask_values to tensors
         mask_indices = torch.tensor(mask_indices).t()
         mask_values = torch.tensor(mask_values, dtype=torch.float32)
-        # Create the sparse tensor for the masked weight matrix
         masked_weight = torch.sparse.FloatTensor(
             mask_indices, mask_values, torch.Size([hidden_size, hidden_size]))
 
-        # Create a boolean tensor to mark trainable weights and set requires_grad=True
-        trainable_mask = torch.tensor(trainable_mask, dtype=torch.bool)
+        trainable_mask = torch.tensor(trainable_mask,
+                                      dtype=torch.bool).clone().detach()
         masked_weight.requires_grad = True
         masked_weight.mask = trainable_mask
 
@@ -167,10 +144,73 @@ class BalRNN(nn.Module):
         output = torch.stack(output)
         if self.batch_first:
             output = output.transpose(0, 1)
+        # Apply the linear layer to map to input_size
+        output = self.output_layer(output)
         return output, h_t
 
 
-import numpy as np
+def train_network(model, data, num_epochs=100, learning_rate=0.001):
+    """
+    Train the BalRNN on the given time series data.
+
+    Args:
+        model (BalRNN): The recurrent neural network model to be trained.
+        data (np.ndarray): The time series data for training of shape (num_samples, seq_len, num_features).
+        num_epochs (int): The number of epochs for training.
+        learning_rate (float): The learning rate for the optimizer.
+
+    Returns:
+        list: Training loss history.
+    """
+    # Convert data to PyTorch tensor
+    data = torch.tensor(data, dtype=torch.float32)
+
+    # Define the loss function
+    criterion = nn.MSELoss()
+
+    # Separate the parameters into dense and sparse
+    dense_params = []
+    sparse_params = []
+    for name, param in model.named_parameters():
+        if param.is_sparse:
+            sparse_params.append(param)
+        else:
+            dense_params.append(param)
+
+    print(sparse_params)
+
+    # Define separate optimizers for dense and sparse parameters
+    optimizer_dense = optim.Adam(dense_params, lr=learning_rate)
+    optimizer_sparse = optim.SparseAdam(sparse_params, lr=learning_rate)
+
+    # Training loop
+    loss_history = []
+    for epoch in range(num_epochs):
+        model.train()
+
+        # Zero the gradients for both optimizers
+        optimizer_dense.zero_grad()
+        optimizer_sparse.zero_grad()
+
+        # Forward pass
+        output, _ = model(data)
+
+        # Compute the loss
+        loss = criterion(output, data)
+
+        # Backward pass and optimization
+        loss.backward()
+        optimizer_dense.step()
+        optimizer_sparse.step()
+
+        # Record the loss
+        loss_history.append(loss.item())
+
+        # Print loss every 10 epochs
+        if (epoch + 1) % 10 == 0:
+            print(f'Epoch [{epoch + 1}/{num_epochs}], Loss: {loss.item():.4f}')
+
+    return loss_history
 
 
 def generate_time_series(seq_len, num_features, num_samples=1):
@@ -194,58 +234,6 @@ def generate_time_series(seq_len, num_features, num_samples=1):
         time_series[:, :, i] = np.sin(2 * np.pi * freq * t + phase)
 
     return time_series
-
-
-import torch
-import torch.optim as optim
-
-
-def train_network(model, data, num_epochs=100, learning_rate=0.001):
-    """
-    Train the BalRNN on the given time series data.
-
-    Args:
-        model (BalRNN): The recurrent neural network model to be trained.
-        data (np.ndarray): The time series data for training of shape (num_samples, seq_len, num_features).
-        num_epochs (int): The number of epochs for training.
-        learning_rate (float): The learning rate for the optimizer.
-
-    Returns:
-        list: Training loss history.
-    """
-    # Convert data to PyTorch tensor
-    data = torch.tensor(data, dtype=torch.float32)
-
-    # Define the loss function and optimizer
-    criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-
-    # Training loop
-    loss_history = []
-    for epoch in range(num_epochs):
-        model.train()
-
-        # Zero the gradients
-        optimizer.zero_grad()
-
-        # Forward pass
-        output, _ = model(data)
-
-        # Compute the loss
-        loss = criterion(output, data)
-
-        # Backward pass and optimization
-        loss.backward()
-        optimizer.step()
-
-        # Record the loss
-        loss_history.append(loss.item())
-
-        # Print loss every 10 epochs
-        if (epoch + 1) % 10 == 0:
-            print(f'Epoch [{epoch + 1}/{num_epochs}], Loss: {loss.item():.4f}')
-
-    return loss_history
 
 
 if __name__ == '__main__':
@@ -287,55 +275,3 @@ if __name__ == '__main__':
     plt.ylabel('Loss')
     plt.title('Training Loss')
     plt.show()
-
-# if __name__ == '__main__':
-#     input_size = 250  # num of ff neurons
-#     hidden_size = 1000  # num of neurons in the balanced network
-#     num_layers = 1  # 1 layer of balanced network
-#     batch_size = 1
-#     seq_len = 100  # simulation time
-#     K = 100
-#     JI0 = 1.0
-#     JII = -0.001
-#     rnn = BalRNN(input_size,
-#                  hidden_size,
-#                  num_layers,
-#                  batch_first=True,
-#                  K=K,
-#                  JI0=JI0,
-#                  JII=JII)
-#     # (batch_size, seq_len, input_size)
-#     x = 1.0 * torch.ones(batch_size, seq_len, input_size)
-#     # total_input will be: O(K * JI0 / sqrt(K)) = O(sqrt(K))
-#     # randn(3, 5, input_size)
-#     h_0 = torch.zeros(num_layers, batch_size,
-#                       hidden_size)  # (num_layers, batch_size, hidden_size)
-#     output, h_n = rnn(x, h_0)
-#     print(output.shape)
-#     print(h_n.shape)
-
-#     import matplotlib.pyplot as plt
-#     import numpy as np
-
-#     # plt.figure()
-#     # plt.hist(h_n.detach().numpy().squeeze())
-#     # u = h_n.detach().numpy().squeeze()
-#     # print('u:', sum(u <= 0))
-
-#     # plt.hist(h_n.detach().numpy().squeeze(), 25)
-
-#     rates = output.detach().numpy().squeeze()
-#     #.mean(axis=1)
-#     # plt.plot(rates[:, :10])
-#     fig, ax = plt.subplots()
-#     ri = rates.mean(axis=0)
-#     print(ri.min(), ri.max(), sum(ri <= 0))
-#     ax.hist(ri, 25)
-#     ax.set_xscale('symlog')
-#     # ax.set_xticks(np.linspace(1e-5, 1e1, 1e-1))
-#     plt.title('rate distr')
-#     plt.figure()
-#     plt.plot(rates.mean(axis=1))
-#     plt.title('network avg rate')
-#     print(sum(rates.mean(axis=1) <= 0))
-#     plt.show()

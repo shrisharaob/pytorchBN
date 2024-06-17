@@ -1,0 +1,89 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import numpy as np
+
+
+class BalRNN(nn.Module):
+    '''one pop bal network with training on dense weights'''
+
+    def __init__(self,
+                 input_size,
+                 hidden_size,
+                 num_layers,
+                 batch_first=True,
+                 K=10,
+                 JI0=0.4,
+                 JII=-0.1):
+        super(BalRNN, self).__init__()
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.batch_first = batch_first
+        self.K = K
+        self.JI0 = JI0
+        self.JII = JII
+
+        # ff
+        self.weight_ih = nn.ParameterList([
+            nn.Parameter(
+                self.initialize_ff_weight(input_size, hidden_size, K, JI0))
+            for _ in range(num_layers)
+        ])
+
+        # Initialize hidden-to-hidden recurrent weights with masking
+        self.weight_hh = nn.ParameterList([
+            nn.Parameter(self.initialize_dense_weight(hidden_size, K, JII))
+            for _ in range(num_layers)
+        ])
+
+        # Linear layer to map from hidden_size to input_size
+        self.output_layer = nn.Linear(hidden_size, input_size)
+
+    def initialize_ff_weight(self, input_size, hidden_size, K, JI0):
+        weight = torch.zeros(hidden_size, input_size)
+        for i in range(hidden_size):
+            tmp_K = np.where(np.random.rand(input_size) <= K / input_size)[0]
+            selected_indices = torch.tensor(tmp_K)
+            weight[i, selected_indices] = JI0 / torch.sqrt(
+                torch.tensor(K, dtype=torch.float32))
+        return weight
+
+    def initialize_dense_weight(self, hidden_size, K, J):
+        weight = torch.zeros(hidden_size, hidden_size)
+        for i in range(hidden_size):
+            tmp_K = np.where(np.random.rand(hidden_size) <= K / hidden_size)[0]
+            selected_indices = torch.tensor(tmp_K)
+            weight[i, selected_indices] = J / torch.sqrt(
+                torch.tensor(K, dtype=torch.float32))
+        return weight
+
+    def transfer_function(self, total_input):
+        return F.relu(total_input)
+
+    def forward(self, x, h_0=None):
+        if self.batch_first:
+            x = x.transpose(0, 1)  # Ensure (seq_len, batch_size, input_size)
+        seq_len, batch_size, _ = x.size()
+        if h_0 is None:
+            h_0 = torch.zeros(self.num_layers, batch_size, self.hidden_size)
+        h_t_minus_1 = h_0
+        h_t = h_0.clone()
+        output = []
+        for t in range(seq_len):
+            for layer in range(self.num_layers):
+                if layer == 0:
+                    h_t[layer] = self.transfer_function(
+                        torch.mm(x[t], self.weight_ih[layer].T) +
+                        torch.mm(h_t_minus_1[layer], self.weight_hh[layer].T))
+                else:
+                    h_t[layer] = self.transfer_function(
+                        torch.mm(h_t[layer - 1], self.weight_hh[layer].T) +
+                        torch.mm(h_t_minus_1[layer], self.weight_hh[layer].T))
+            output.append(h_t[-1])
+            h_t_minus_1 = h_t.clone()
+        output = torch.stack(output)
+        if self.batch_first:
+            output = output.transpose(0, 1)
+        # Apply the linear layer to map to input_size
+        output = self.output_layer(output)
+        return output, h_t
