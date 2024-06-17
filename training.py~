@@ -18,6 +18,7 @@ class BalRNN(nn.Module):
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.batch_first = batch_first
+        self.K = K
         self.J0I = J0I
         self.JII = JII
         #
@@ -35,31 +36,16 @@ class BalRNN(nn.Module):
             for _ in range(num_layers)
         ])
 
-    def initialize_ff_weight(self, input_size, hidden_size, K, J0I):
-        indices = []
-        values = []
-        for i in range(hidden_size):
-            selected_indices = torch.randperm(input_size)[:K]
-            indices.extend([[i, j] for j in selected_indices])
-            values.extend(
-                [self.J0I / torch.sqrt(torch.tensor(K, dtype=torch.float32))] *
-                K)  # list mult
-
-        indices = torch.tensor(indices).t()
-        values = torch.tensor(values, dtype=torch.float32)
-        ff_sparse_weight = torch.sparse.FloatTensor(
-            indices, values, torch.Size([hidden_size, input_size]))
-        return ff_sparse_weight
-
     def initialize_sparse_weight(self, hidden_size, K, J):
         indices = []
         values = []
         for i in range(hidden_size):
-            selected_indices = torch.randperm(hidden_size)[:K]
+            selected_indices = torch.randperm(hidden_size)[:int(
+                K**0.5)]  # Choose sqrt(K) indices randomly
             indices.extend([[i, j] for j in selected_indices])
             values.extend(
-                [self.JII / torch.sqrt(torch.tensor(K, dtype=torch.float32))] *
-                K)
+                [J / torch.sqrt(torch.tensor(K, dtype=torch.float32))] *
+                int(K**0.5))
 
         indices = torch.tensor(indices).t()
         values = torch.tensor(values, dtype=torch.float32)
@@ -68,9 +54,7 @@ class BalRNN(nn.Module):
         return sparse_weight
 
     def transfer_function(self, total_input):
-        return F.relu(total_input)  # should we care about positive rates?
-        # return torch.ones(x.shape) +
-        # return torch.tanh(total_input)
+        return F.relu(total_input)
 
     def forward(self, x, h_0=None):
         if self.batch_first:
@@ -83,15 +67,15 @@ class BalRNN(nn.Module):
         output = []
         for t in range(seq_len):
             for layer in range(self.num_layers):
-                if layer == 0:  # x[t] @ self.weight_ih[layer].T
+                if layer == 0:
                     h_t[layer] = self.transfer_function(
                         torch.sparse.mm(self.weight_ih[layer], x[t].T).T +
                         torch.sparse.mm(self.weight_hh[layer],
                                         h_t_minus_1[layer].T).T)
                 else:
                     h_t[layer] = self.transfer_function(
-                        torch.sparse.mm(self.weight_hh[layer], \
-                                        h_t[layer - 1].T).T +
+                        torch.sparse.mm(self.weight_hh[layer], h_t[layer -
+                                                                   1].T).T +
                         torch.sparse.mm(self.weight_hh[layer],
                                         h_t_minus_1[layer].T).T)
             output.append(h_t[-1])
@@ -101,50 +85,29 @@ class BalRNN(nn.Module):
             output = output.transpose(0, 1)
         return output, h_t
 
+    def mask_non_trainable_weights(self):
+        for layer in range(self.num_layers):
+            weight_hh_layer = self.weight_hh[layer]
+            weight_hh_layer.data.mul_(weight_hh_layer._mask)
 
-if __name__ == '__main__':
-    input_size = 250  # num of ff neurons
-    hidden_size = 1000  # num of neurons in the balanced network
-    num_layers = 1  # 1 layer of balanced network
-    batch_size = 1
-    seq_len = 100  # simulation time
-    K = 100
-    J0I = 0.2
-    JII = -0.1
-    rnn = BalRNN(input_size,
-                 hidden_size,
-                 num_layers,
-                 batch_first=True,
-                 K=K,
-                 J0I=J0I,
-                 JII=JII)
-    # (batch_size, seq_len, input_size)
-    x = 4.0 * torch.ones(batch_size, seq_len, input_size)
-    # total_input will be: O(K * J0I / sqrt(K)) = O(sqrt(K))
-    # randn(3, 5, input_size)
-    h_0 = torch.zeros(num_layers, batch_size,
-                      hidden_size)  # (num_layers, batch_size, hidden_size)
-    output, h_n = rnn(x, h_0)
-    print(output.shape)
-    print(h_n.shape)
 
-    import matplotlib.pyplot as plt
-    import numpy as np
+# Example Usage:
+input_size = 10
+hidden_size = 5
+num_layers = 2
+batch_size = 3
+seq_len = 4
 
-    # plt.hist(h_n.detach().numpy().squeeze(), 25)
+model = BalRNN(input_size, hidden_size, num_layers)
 
-    rates = output.detach().numpy().squeeze()
-    #.mean(axis=1)
-    # plt.plot(rates[:, :10])
-    fig, ax = plt.subplots()
-    ri = rates.mean(axis=0)
-    print(ri.min(), ri.max(), sum(ri <= 0))
-    ax.hist(ri, 25)
-    ax.set_xscale('symlog')
-    # ax.set_xticks(np.linspace(1e-5, 1e1, 1e-1))
-    plt.title('rate distr: is this balanced??')
-    plt.figure()
-    plt.plot(rates.mean(axis=1))
-    plt.title('network avg rate')
-    print(sum(rates.mean(axis=1) <= 0))
-    plt.show()
+# Mask non-trainable weights
+for layer in range(num_layers):
+    weight_hh_layer = model.weight_hh[layer]
+    selected_indices = torch.randperm(hidden_size)[:int(hidden_size**0.5)]
+    mask = torch.zeros(hidden_size, hidden_size)
+    mask[:, selected_indices] = 1
+    weight_hh_layer._mask = nn.Parameter(mask, requires_grad=False)
+
+input_data = torch.randn(seq_len, batch_size, input_size)
+output, _ = model(input_data)
+print(output.shape)  # Output shape: (seq_len, batch_size, hidden_size)

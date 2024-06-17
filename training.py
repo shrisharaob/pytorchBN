@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 
 class BalRNN(nn.Module):
-    '''one pop bal network'''
+    '''one pop bal network with training on sqrt(K) weights'''
 
     def __init__(self,
                  input_size,
@@ -18,11 +18,12 @@ class BalRNN(nn.Module):
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.batch_first = batch_first
+        self.K = K
         self.J0I = J0I
         self.JII = JII
         #
         self.history = []
-        #
+        # ff
         self.weight_ih = nn.ParameterList([
             nn.Parameter(
                 torch.randn(hidden_size, input_size) *
@@ -30,8 +31,9 @@ class BalRNN(nn.Module):
             for _ in range(num_layers)
         ])
 
+        # Initialize hidden-to-hidden recurrent weights with masking
         self.weight_hh = nn.ParameterList([
-            nn.Parameter(self.initialize_sparse_weight(hidden_size, K, JII))
+            nn.Parameter(self.initialize_masked_weight(hidden_size, K, JII))
             for _ in range(num_layers)
         ])
 
@@ -55,11 +57,12 @@ class BalRNN(nn.Module):
         indices = []
         values = []
         for i in range(hidden_size):
-            selected_indices = torch.randperm(hidden_size)[:K]
+            selected_indices = torch.randperm(hidden_size)[:int(
+                K)]  # Choose sqrt(K) indices randomly
             indices.extend([[i, j] for j in selected_indices])
             values.extend(
-                [self.JII / torch.sqrt(torch.tensor(K, dtype=torch.float32))] *
-                K)
+                [J / torch.sqrt(torch.tensor(K, dtype=torch.float32))] *
+                int(K))
 
         indices = torch.tensor(indices).t()
         values = torch.tensor(values, dtype=torch.float32)
@@ -67,10 +70,51 @@ class BalRNN(nn.Module):
             indices, values, torch.Size([hidden_size, hidden_size]))
         return sparse_weight
 
+    def initialize_masked_weight(self, hidden_size, K, J):
+        mask_indices = []
+        mask_values = []
+
+        for i in range(hidden_size):
+            # Randomly select K indices for connections
+            selected_indices = torch.randperm(hidden_size)[:K]
+
+            # Extend mask_indices with the selected indices for the current unit
+            mask_indices.extend([[i, j] for j in selected_indices])
+
+            # Set values for these connections to J/sqrt(K)
+            mask_values.extend(
+                [J / torch.sqrt(torch.tensor(K, dtype=torch.float32))] * K)
+
+            # Randomly select sqrt(K) indices as trainable connections
+            trainable_indices = selected_indices[:int(K**0.5)]
+            trainable_values = [
+                J / torch.sqrt(torch.tensor(int(K**0.5), dtype=torch.float32))
+            ] * int(K**0.5)
+            mask_values[-int(K**0.5):] = trainable_values
+
+            # Create a trainable mask tensor to mark trainable weights
+            trainable_mask = torch.zeros(hidden_size)
+            trainable_mask[trainable_indices] = 1
+            trainable_mask = trainable_mask.unsqueeze(1)
+            trainable_mask = trainable_mask.repeat(1, hidden_size)
+            trainable_mask = trainable_mask.reshape(-1)
+
+        # Convert mask_indices and mask_values to tensors
+        mask_indices = torch.tensor(mask_indices).t()
+        mask_values = torch.tensor(mask_values, dtype=torch.float32)
+        # Create the sparse tensor for the masked weight matrix
+        masked_weight = torch.sparse.FloatTensor(
+            mask_indices, mask_values, torch.Size([hidden_size, hidden_size]))
+
+        # Create a boolean tensor to mark trainable weights and set requires_grad=True
+        trainable_mask = torch.tensor(trainable_mask, dtype=torch.bool)
+        masked_weight.requires_grad = True
+        masked_weight.mask = trainable_mask
+
+        return masked_weight
+
     def transfer_function(self, total_input):
-        return F.relu(total_input)  # should we care about positive rates?
-        # return torch.ones(x.shape) +
-        # return torch.tanh(total_input)
+        return F.relu(total_input)
 
     def forward(self, x, h_0=None):
         if self.batch_first:
@@ -83,15 +127,15 @@ class BalRNN(nn.Module):
         output = []
         for t in range(seq_len):
             for layer in range(self.num_layers):
-                if layer == 0:  # x[t] @ self.weight_ih[layer].T
+                if layer == 0:
                     h_t[layer] = self.transfer_function(
                         torch.sparse.mm(self.weight_ih[layer], x[t].T).T +
                         torch.sparse.mm(self.weight_hh[layer],
                                         h_t_minus_1[layer].T).T)
                 else:
                     h_t[layer] = self.transfer_function(
-                        torch.sparse.mm(self.weight_hh[layer], \
-                                        h_t[layer - 1].T).T +
+                        torch.sparse.mm(self.weight_hh[layer], h_t[layer -
+                                                                   1].T).T +
                         torch.sparse.mm(self.weight_hh[layer],
                                         h_t_minus_1[layer].T).T)
             output.append(h_t[-1])
