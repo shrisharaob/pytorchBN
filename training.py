@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import numpy as np
 
 
 class BalRNN(nn.Module):
@@ -76,14 +77,19 @@ class BalRNN(nn.Module):
 
         for i in range(hidden_size):
             # Randomly select K indices for connections
-            selected_indices = torch.randperm(hidden_size)[:K]
+            # selected_indices = torch.randperm(hidden_size)[:K]
+
+            tmp_K = np.where(np.random.rand(hidden_size) <= K / hidden_size)[0]
+            selected_indices = torch.tensor(tmp_K)
+            num_selected_indices = selected_indices.shape[0]
 
             # Extend mask_indices with the selected indices for the current unit
             mask_indices.extend([[i, j] for j in selected_indices])
 
             # Set values for these connections to J/sqrt(K)
             mask_values.extend(
-                [J / torch.sqrt(torch.tensor(K, dtype=torch.float32))] * K)
+                [J / torch.sqrt(torch.tensor(K, dtype=torch.float32))] *
+                num_selected_indices)
 
             # Randomly select sqrt(K) indices as trainable connections
             trainable_indices = selected_indices[:int(K**0.5)]

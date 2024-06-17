@@ -24,10 +24,16 @@ class BalRNN(nn.Module):
         #
         self.history = []
         #
+        # self.weight_ih = nn.ParameterList([
+        #     nn.Parameter(
+        #         torch.randn(hidden_size, input_size) *
+        #         (JI0 / torch.sqrt(torch.tensor(K, dtype=torch.float32))))
+        #     for _ in range(num_layers)
+        # ])
+
         self.weight_ih = nn.ParameterList([
             nn.Parameter(
-                torch.randn(hidden_size, input_size) *
-                (JI0 / torch.sqrt(torch.tensor(K, dtype=torch.float32))))
+                self.initialize_ff_weight(input_size, hidden_size, K, JII))
             for _ in range(num_layers)
         ])
 
@@ -40,11 +46,14 @@ class BalRNN(nn.Module):
         indices = []
         values = []
         for i in range(hidden_size):
-            selected_indices = torch.randperm(input_size)[:K]
+            # selected_indices = torch.randperm(input_size)[:K]
+            tmp_K = np.where(np.random.rand(input_size) <= K / input_size)[0]
+            selected_indices = torch.tensor(tmp_K)
+            num_selected_indices = selected_indices.shape[0]
             indices.extend([[i, j] for j in selected_indices])
             values.extend(
                 [self.JI0 / torch.sqrt(torch.tensor(K, dtype=torch.float32))] *
-                K)  # list mult
+                num_selected_indices)  # list mult
 
         indices = torch.tensor(indices).t()
         values = torch.tensor(values, dtype=torch.float32)
@@ -83,15 +92,15 @@ class BalRNN(nn.Module):
         h_t_minus_1 = h_0
         h_t = h_0.clone()
         output = []
+        # constant ff_input
         ff_input = torch.ones(self.hidden_size) * torch.sqrt(torch.tensor(K))
-        print('ffshape:', ff_input.shape)
-        tmp = torch.sparse.mm(self.weight_hh[0], h_t_minus_1[0].T).T
-        print(tmp.shape)
-        tmp2 = ff_input + tmp
-        print('tmp2shape:', tmp2.shape)
         for t in range(seq_len):
             for layer in range(self.num_layers):
                 if layer == 0:  # x[t] @ self.weight_ih[layer].T
+                    # variable ff_input
+                    ff_input = torch.sparse.mm(self.weight_ih[layer], x[t].T).T
+                    # print('ff_input shape', ff_input.shape)
+                    # print(ff_input)
                     h_t[layer] = self.transfer_function(
                         ff_input + torch.sparse.mm(self.weight_hh[layer],
                                                    h_t_minus_1[layer].T).T)
